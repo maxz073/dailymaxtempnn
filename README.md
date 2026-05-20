@@ -133,6 +133,15 @@ python data_fetch.py
 
 Re-fetches all data from APIs (NWS/ACIS, Open-Meteo, NOAA CPC). Existing files are skipped.
 
+### Economic value analyses
+
+```bash
+python energy_value.py      # ERCOT energy procurement savings
+python kalshi_backtest.py   # Kalshi temperature market backtest
+```
+
+See [ECONOMIC_ANALYSIS.md](ECONOMIC_ANALYSIS.md) for full methodology, assumptions, and parameter documentation.
+
 ## Data Splits
 
 | Split | Date Range | Purpose |

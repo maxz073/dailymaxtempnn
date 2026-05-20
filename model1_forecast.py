@@ -290,7 +290,7 @@ def build_features() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list[str
     )
     _nws_lag1_vals = df.groupby("ticker")["nws_high"].shift(1)
     _rank_values = np.zeros(len(df))
-    for ticker in df["ticker"].unique():
+    for ticker in df["ticker"].Letunique():
         mask = df["ticker"] == ticker
         q_vals = _train_quantiles[_train_quantiles["ticker"] == ticker]["val"].values
         if len(q_vals) > 0:
