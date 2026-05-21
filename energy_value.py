@@ -24,6 +24,15 @@ from matplotlib.ticker import FuncFormatter
 import config as cfg
 from economic_data_prep import load_test_with_nwp, NWP_COLS
 
+NWP_DISPLAY_NAMES = {
+    "fcst_gfs_global": "GFS",
+    "fcst_ecmwf_ifs025": "ECMWF",
+    "fcst_icon_seamless": "ICON",
+    "fcst_gem_seamless": "GEM",
+    "fcst_jma_seamless": "JMA",
+    "fcst_ncep_hrrr_conus": "HRRR",
+}
+
 # ── Constants ───────────────────────────────────────────────────────────
 
 ERCOT_CITIES = {
@@ -56,30 +65,28 @@ def build_ercot_daily(df: pd.DataFrame) -> pd.DataFrame:
     """Aggregate city-level predictions to ERCOT-wide daily values.
 
     Returns one row per date with population-weighted NN forecast,
-    NWP ensemble forecast, and actual temperature.
+    NWP ensemble forecast, individual NWP model forecasts, and actual temperature.
     """
     ercot = df[df["ticker"].isin(ERCOT_CITIES)].copy()
     ercot["weight"] = ercot["ticker"].map(ERCOT_CITIES)
 
+    def _agg(g):
+        w = g["weight"].values
+        w_sum = w.sum()
+        result = {
+            "nn_forecast": (g["mu"].values * w).sum() / w_sum,
+            "nwp_forecast": (g["nwp_ensemble_mean"].values * w).sum() / w_sum,
+            "actual": (g["y_true"].values * w).sum() / w_sum,
+            "nn_sigma": np.sqrt(((g["sigma"].values ** 2) * (w ** 2)).sum()) / w_sum,
+        }
+        for col in NWP_COLS:
+            if col in g.columns:
+                result[col] = (g[col].values * w).sum() / w_sum
+        return pd.Series(result)
+
     agg = (
         ercot.groupby("date")
-        .apply(
-            lambda g: pd.Series(
-                {
-                    "nn_forecast": (g["mu"] * g["weight"]).sum() / g["weight"].sum(),
-                    "nwp_forecast": (
-                        g["nwp_ensemble_mean"] * g["weight"]
-                    ).sum()
-                    / g["weight"].sum(),
-                    "actual": (g["y_true"] * g["weight"]).sum() / g["weight"].sum(),
-                    "nn_sigma": np.sqrt(
-                        ((g["sigma"] ** 2) * (g["weight"] ** 2)).sum()
-                    )
-                    / g["weight"].sum(),
-                }
-            ),
-            include_groups=False,
-        )
+        .apply(_agg, include_groups=False)
         .reset_index()
     )
     agg["month"] = agg["date"].dt.month
@@ -134,10 +141,13 @@ def run_ercot_analysis(
     sensitivity: float = DEFAULT_SENSITIVITY_MW_PER_F,
     threshold: float = DEFAULT_COOLING_THRESHOLD_F,
 ) -> pd.DataFrame:
-    """Full ERCOT value calculation using real ERCOT HB_HOUSTON prices."""
+    """Full ERCOT value calculation using real ERCOT HB_HOUSTON prices.
+
+    Computes costs for NN, NWP ensemble mean, and each individual NWP model.
+    """
     daily = build_ercot_daily(df)
 
-    # Load errors
+    # Load errors — NN and ensemble mean
     daily["nn_load_error_mw"] = compute_load_error(
         daily["nn_forecast"].values, daily["actual"].values,
         sensitivity, threshold,
@@ -146,6 +156,14 @@ def run_ercot_analysis(
         daily["nwp_forecast"].values, daily["actual"].values,
         sensitivity, threshold,
     )
+
+    # Load errors — individual NWP models
+    for col in NWP_COLS:
+        if col in daily.columns:
+            daily[f"{col}_load_error_mw"] = compute_load_error(
+                daily[col].values, daily["actual"].values,
+                sensitivity, threshold,
+            )
 
     # Real ERCOT DA-RT spread
     prices = load_real_ercot_prices()
@@ -159,6 +177,13 @@ def run_ercot_analysis(
     daily["nwp_cost"] = compute_daily_cost(daily["nwp_load_error_mw"].values, spread)
     daily["daily_savings"] = daily["nwp_cost"] - daily["nn_cost"]
     daily["cumulative_savings"] = daily["daily_savings"].cumsum()
+
+    # Costs — individual NWP models
+    for col in NWP_COLS:
+        if col in daily.columns:
+            daily[f"{col}_cost"] = compute_daily_cost(
+                daily[f"{col}_load_error_mw"].values, spread,
+            )
 
     return daily
 

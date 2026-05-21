@@ -55,7 +55,7 @@ The model outputs a heteroscedastic Gaussian (mu, sigma), providing both a point
 | Solar / astronomical | day length, solar declination, days since winter solstice | 3 |
 | Cross interactions | mean×std, spread×cloud, elevation×pressure, coastal×wind, continentality×season | 5 |
 
-## Performance
+**## Performance
 
 ### Out-of-Sample (Test: Apr 2025–Apr 2026, full year)
 
@@ -76,7 +76,7 @@ The model outputs a heteroscedastic Gaussian (mu, sigma), providing both a point
 | NWP Ens. Mean | 2.28°F | 26.3% | 52.4% |
 | GFS | 2.37°F | 29.5% | 53.8% |
 | ECMWF | 2.85°F | 21.6% | 42.1% |
-| JMA | 4.34°F | 12.0% | 25.4% |
+| JMA | 4.34°F | 12.0% | 25.4% |**
 
 The model beats all 6 individual NWP models and their ensemble mean on every city.
 
