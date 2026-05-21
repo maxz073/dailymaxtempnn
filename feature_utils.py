@@ -198,12 +198,12 @@ def add_rolling(df: pd.DataFrame, col: str, windows: list[int],
     """Add rolling statistics grouped by city. Stats: 'mean', 'std', 'max', 'min'."""
     if stats is None:
         stats = ["mean"]
+    shifted = df.groupby(group_col)[col].shift(1)
     for w in windows:
-        grouped = df.groupby(group_col)[col]
         for stat in stats:
-            shifted = grouped.shift(1)  # avoid leaking current day
-            rolling = shifted.rolling(w, min_periods=1)
-            df[f"{col}_roll{w}_{stat}"] = getattr(rolling, stat)()
+            df[f"{col}_roll{w}_{stat}"] = shifted.groupby(df[group_col]).transform(
+                lambda x, s=stat, ww=w: getattr(x.rolling(ww, min_periods=1), s)()
+            )
     return df
 
 

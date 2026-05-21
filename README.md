@@ -61,9 +61,9 @@ The model outputs a heteroscedastic Gaussian (mu, sigma), providing both a point
 
 | Metric | Value |
 |---|---|
-| MAE | 1.25°F |
-| RMSE | 1.66°F |
-| Bias | -0.01°F |
+| MAE | 1.26°F |
+| RMSE | 1.69°F |
+| Bias | +0.03°F |
 | R² | 0.992 |
 | Correlation | 0.996 |
 
@@ -71,7 +71,7 @@ The model outputs a heteroscedastic Gaussian (mu, sigma), providing both a point
 
 | Model | MAE | Within 1°F | Within 2°F |
 |---|---|---|---|
-| **NN Bias-Correction** | **1.25°F** | **50.7%** | **81.0%** |
+| **NN Bias-Correction** | **1.26°F** | **51.1%** | **80.5%** |
 | HRRR | 2.07°F | 37.9% | 63.5% |
 | NWP Ens. Mean | 2.28°F | 26.3% | 52.4% |
 | GFS | 2.37°F | 29.5% | 53.8% |

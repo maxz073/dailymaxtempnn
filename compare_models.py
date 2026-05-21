@@ -55,26 +55,29 @@ def run_comparison():
 
     # Forecast columns
     fcst_cols = [c for c in df.columns if c.startswith("fcst_")]
-    # Fill NaN forecasts per city
+    # Fill NaN forecasts per city (means computed from train only)
+    _train_fill_mask = df["date"] <= pd.Timestamp(cfg.TRAIN_END)
     for col in fcst_cols:
-        city_means = df.groupby("ticker")[col].transform("mean")
-        df[col] = df[col].fillna(city_means)
+        train_city_means = df.loc[_train_fill_mask].groupby("ticker")[col].mean()
+        df[col] = df[col].fillna(df["ticker"].map(train_city_means))
     df["fcst_ensemble_mean"] = df[fcst_cols].mean(axis=1)
 
     # Drop rows with NaN NWS high
     df = df.dropna(subset=["nws_high"]).reset_index(drop=True)
 
-    # ── Load neural net predictions ──────────────────────────────────
-    nn_models = {}
-    nn_models_val = {}
-    ckpt = cfg.CHECKPOINT_DIR
-
-    for split, store in [("test", nn_models), ("val", nn_models_val)]:
-        path = os.path.join(ckpt, f"model1_preds_{split}.parquet")
+    # ── Load neural net predictions (all splits, concatenated) ───────
+    nn_all_preds = {}
+    pred_dfs = []
+    for split in ["train", "val", "test"]:
+        path = os.path.join(cfg.CHECKPOINT_DIR, f"model1_preds_{split}.parquet")
         if os.path.exists(path):
             pred_df = pd.read_parquet(path)
-            store["NN Bias-Correction"] = pred_df
+            pred_df["date"] = pd.to_datetime(pred_df["date"])
+            pred_dfs.append(pred_df)
             log.info("Loaded model1 %s predictions: %d rows", split, len(pred_df))
+    if pred_dfs:
+        nn_all_preds["NN Bias-Correction"] = pd.concat(pred_dfs, ignore_index=True)
+        log.info("Combined NN predictions: %d rows total", len(next(iter(nn_all_preds.values()))))
 
     # ── Define date splits ───────────────────────────────────────────
     splits = {
@@ -120,25 +123,15 @@ def run_comparison():
             name = nwp_display.get(col, col)
             results.append((name, m))
 
-        # Neural net model (only for val/test splits where predictions exist)
-        if split_name.startswith("Val"):
-            for name, pred_df in nn_models_val.items():
-                merged = pred_df.merge(nws[["date", "ticker", "nws_high"]],
+        # Neural net model (available for any split covered by predictions)
+        for name, pred_df in nn_all_preds.items():
+            split_preds = pred_df[(pred_df["date"] >= start) & (pred_df["date"] <= end)]
+            merged = split_preds.merge(nws[["date", "ticker", "nws_high"]],
                                        on=["date", "ticker"], how="inner")
-                merged = merged.dropna(subset=["nws_high", "mu"])
-                if len(merged) >= 10:
-                    m = compute_metrics(merged["nws_high"].values, merged["mu"].values)
-                    results.append((name, m))
-
-        if split_name.startswith("Test"):
-            for name, pred_df in nn_models.items():
-                mu_col = "mu"
-                merged = pred_df.merge(nws[["date", "ticker", "nws_high"]],
-                                       on=["date", "ticker"], how="inner")
-                merged = merged.dropna(subset=["nws_high", mu_col])
-                if len(merged) >= 10:
-                    m = compute_metrics(merged["nws_high"].values, merged[mu_col].values)
-                    results.append((name, m))
+            merged = merged.dropna(subset=["nws_high", "mu"])
+            if len(merged) >= 10:
+                m = compute_metrics(merged["nws_high"].values, merged["mu"].values)
+                results.append((name, m))
 
         # Sort by MAE
         results.sort(key=lambda x: x[1]["MAE"])
@@ -173,10 +166,12 @@ def run_comparison():
                     name = nwp_display.get(col, col)
                     row[name] = mae
 
-            # Add NN model if available
-            if "NN Bias-Correction" in nn_models:
-                nn_pred = nn_models["NN Bias-Correction"]
-                city_nn = nn_pred[nn_pred["ticker"] == ticker].merge(
+            # Add NN model if available (test period only for per-city breakdown)
+            if "NN Bias-Correction" in nn_all_preds:
+                nn_pred = nn_all_preds["NN Bias-Correction"]
+                nn_pred_test = nn_pred[(nn_pred["date"] >= pd.Timestamp(cfg.TEST_START)) &
+                                       (nn_pred["date"] <= pd.Timestamp(cfg.TEST_END))]
+                city_nn = nn_pred_test[nn_pred_test["ticker"] == ticker].merge(
                     nws[["date", "ticker", "nws_high"]], on=["date", "ticker"], how="inner"
                 ).dropna(subset=["nws_high", "mu"])
                 if len(city_nn) > 0:

@@ -14,6 +14,7 @@ At inference time: predicted_actual = forecast_mean + predicted_residual
 """
 import os
 import sys
+import shutil
 import logging
 
 import numpy as np
@@ -103,10 +104,11 @@ def build_features() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list[str
     log.info("After merge forecast+archive+nws: %d rows", len(df))
 
     # ── (a) Forecast ensemble statistics ────────────────────────────
-    # Fill per-city mean for any NaN forecast columns
+    # Fill per-city mean for any NaN forecast columns (means computed from train only)
+    _train_fill_mask = df["date"] <= pd.Timestamp(cfg.TRAIN_END)
     for col in FORECAST_COLS:
-        city_means = df.groupby("ticker")[col].transform("mean")
-        df[col] = df[col].fillna(city_means)
+        train_city_means = df.loc[_train_fill_mask].groupby("ticker")[col].mean()
+        df[col] = df[col].fillna(df["ticker"].map(train_city_means))
 
     fcst_values = df[FORECAST_COLS]
     df["forecast_mean"] = fcst_values.mean(axis=1)
@@ -459,7 +461,55 @@ def train():
     val_loader = training.make_loader(val_ds, batch_size=hp["batch_size"], shuffle=False)
     test_loader = training.make_loader(test_ds, batch_size=hp["batch_size"], shuffle=False)
 
-    # ── Build model ─────────────────────────────────────────────────
+    # ── Multiple random restarts — keep globally best val loss ──────
+    checkpoint_path = os.path.join(cfg.CHECKPOINT_DIR, "model1_best.pt")
+    tmp_checkpoint_path = os.path.join(cfg.CHECKPOINT_DIR, "model1_restart_tmp.pt")
+    n_restarts = hp.get("n_restarts", 1)
+    best_overall_val_loss = float("inf")
+
+    # Log architecture once before the loop
+    _probe = training.TemperatureMLP(
+        n_continuous=len(cont_cols), n_cities=cfg.N_CITIES,
+        city_embed_dim=hp["city_embed_dim"], hidden_dims=hp["hidden_dims"],
+        dropout=hp["dropout"],
+    )
+    log.info("Model architecture:\n%s", _probe)
+    log.info("Total parameters: %d", sum(p.numel() for p in _probe.parameters()))
+    del _probe
+
+    for restart in range(n_restarts):
+        torch.manual_seed(restart)
+        np.random.seed(restart)
+
+        model = training.TemperatureMLP(
+            n_continuous=len(cont_cols),
+            n_cities=cfg.N_CITIES,
+            city_embed_dim=hp["city_embed_dim"],
+            hidden_dims=hp["hidden_dims"],
+            dropout=hp["dropout"],
+        )
+        log.info("=== Restart %d/%d ===", restart + 1, n_restarts)
+        history = training.train_model(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            hp=hp,
+            checkpoint_path=tmp_checkpoint_path,
+        )
+        run_val_loss = min(history["val_loss"])
+        if run_val_loss < best_overall_val_loss:
+            best_overall_val_loss = run_val_loss
+            shutil.copy(tmp_checkpoint_path, checkpoint_path)
+            log.info("Restart %d/%d: val=%.4f → new best, checkpoint saved",
+                     restart + 1, n_restarts, run_val_loss)
+        else:
+            log.info("Restart %d/%d: val=%.4f (best so far=%.4f)",
+                     restart + 1, n_restarts, run_val_loss, best_overall_val_loss)
+
+    os.remove(tmp_checkpoint_path)
+    log.info("All restarts complete. Best val loss: %.4f", best_overall_val_loss)
+
+    # Load the globally best weights for evaluation
     model = training.TemperatureMLP(
         n_continuous=len(cont_cols),
         n_cities=cfg.N_CITIES,
@@ -467,19 +517,7 @@ def train():
         hidden_dims=hp["hidden_dims"],
         dropout=hp["dropout"],
     )
-    log.info("Model architecture:\n%s", model)
-    n_params = sum(p.numel() for p in model.parameters())
-    log.info("Total parameters: %d", n_params)
-
-    # ── Train ───────────────────────────────────────────────────────
-    checkpoint_path = os.path.join(cfg.CHECKPOINT_DIR, "model1_best.pt")
-    history = training.train_model(
-        model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        hp=hp,
-        checkpoint_path=checkpoint_path,
-    )
+    model.load_state_dict(torch.load(checkpoint_path, weights_only=True))
 
     # ── Evaluate on test set ────────────────────────────────────────
     log.info("=== Test set evaluation ===")

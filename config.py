@@ -129,4 +129,5 @@ MODEL1_HP = {
     "batch_size": 256,
     "patience": 20,
     "city_embed_dim": 8,
+    "n_restarts": 10,
 }
