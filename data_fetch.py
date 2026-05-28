@@ -1,10 +1,3 @@
-"""
-Data fetching utilities.
-  - NWS daily recorded highs from ACIS (target variable)
-  - Historical weather from Open-Meteo Archive API (features)
-  - Historical forecasts from Open-Meteo Historical Forecast API
-  - Climate indices from NOAA CPC
-"""
 import os
 import time
 import logging
@@ -31,11 +24,7 @@ ACIS_URL = "https://data.rcc-acis.org/StnData"
 START = cfg.TRAIN_START.isoformat()
 END = cfg.TEST_END.isoformat()
 
-
-# ── NWS daily recorded highs (ACIS) ─────────────────────────────────
-
 def fetch_nws_daily():
-    """Fetch official NWS daily recorded high temperatures from ACIS for all cities."""
     os.makedirs(NWS_DIR, exist_ok=True)
 
     for ticker, station_id in cfg.NWS_STATIONS.items():
@@ -77,7 +66,7 @@ def fetch_nws_daily():
         for entry in data["data"]:
             date_str = entry[0]
             val = entry[1]
-            # ACIS returns "M" for missing, "T" for trace, "S" for suspicious
+
             if isinstance(val, str) and val not in ("M", "T", "S", ""):
                 try:
                     rows.append({"date": date_str, "nws_high": float(val)})
@@ -93,13 +82,11 @@ def fetch_nws_daily():
         df.to_csv(out, index=False)
         log.info("  %s: %d rows (%d valid)",
                  city_name, len(df), df["nws_high"].notna().sum())
-        time.sleep(1)  # rate limit courtesy
+        time.sleep(1)
 
     log.info("NWS daily high fetch complete.")
 
-
 def load_nws_daily() -> pd.DataFrame:
-    """Load all NWS daily high CSVs into one DataFrame."""
     frames = []
     for ticker in cfg.CITY_TICKERS:
         path = os.path.join(NWS_DIR, f"{ticker}_nws.csv")
@@ -112,11 +99,7 @@ def load_nws_daily() -> pd.DataFrame:
         raise FileNotFoundError("No NWS data found. Run fetch_nws_daily() first.")
     return pd.concat(frames, ignore_index=True)
 
-
-# ── Historical weather (Open-Meteo, used as features) ───────────────
-
 def fetch_weather_archive():
-    """Fetch daily + hourly historical weather for all cities (used as features, NOT target)."""
     os.makedirs(ARCHIVE_DIR, exist_ok=True)
 
     daily_vars = [
@@ -162,26 +145,22 @@ def fetch_weather_archive():
 
         data = resp.json()
 
-        # Daily
         daily = pd.DataFrame(data["daily"])
         daily.rename(columns={"time": "date"}, inplace=True)
         daily.insert(0, "ticker", ticker)
         daily.to_csv(out_daily, index=False)
 
-        # Hourly (for temp path features: 6am, 9am, noon, 3pm)
         hourly = pd.DataFrame(data["hourly"])
         hourly.rename(columns={"time": "datetime"}, inplace=True)
         hourly.insert(0, "ticker", ticker)
         hourly.to_csv(out_hourly, index=False)
 
         log.info("  %s: %d daily rows, %d hourly rows", name, len(daily), len(hourly))
-        time.sleep(3)  # rate limit courtesy
+        time.sleep(3)
 
     log.info("Weather archive fetch complete.")
 
-
 def load_archive_daily() -> pd.DataFrame:
-    """Load all city daily archive CSVs into one DataFrame."""
     frames = []
     for ticker in cfg.CITY_TICKERS:
         path = os.path.join(ARCHIVE_DIR, f"{ticker}_daily.csv")
@@ -193,9 +172,7 @@ def load_archive_daily() -> pd.DataFrame:
         raise FileNotFoundError("No archive data found. Run fetch_weather_archive() first.")
     return pd.concat(frames, ignore_index=True)
 
-
 def load_archive_hourly() -> pd.DataFrame:
-    """Load all city hourly archive CSVs."""
     frames = []
     for ticker in cfg.CITY_TICKERS:
         path = os.path.join(ARCHIVE_DIR, f"{ticker}_hourly.csv")
@@ -207,13 +184,9 @@ def load_archive_hourly() -> pd.DataFrame:
         raise FileNotFoundError("No hourly archive data found.")
     return pd.concat(frames, ignore_index=True)
 
-
-# ── Historical forecasts ─────────────────────────────────────────────
-
 FORECAST_MODELS = ["gfs_global", "ecmwf_ifs025", "icon_seamless", "gem_seamless", "jma_seamless", "ncep_hrrr_conus"]
 
 def fetch_weather_forecasts():
-    """Fetch historical forecast model outputs for daily max temp."""
     os.makedirs(FORECAST_DIR, exist_ok=True)
 
     for ticker, (name, tz, lat, lon) in cfg.CITIES.items():
@@ -266,14 +239,7 @@ def fetch_weather_forecasts():
 
     log.info("Forecast fetch complete.")
 
-
 def fix_gfs_forecasts():
-    """Replace fcst_gfs_seamless (which was identical to HRRR) with true gfs_global data.
-
-    The Open-Meteo 'gfs_seamless' model blends GFS with HRRR for CONUS locations,
-    making it identical to 'ncep_hrrr_conus'. This function re-fetches pure GFS
-    data using 'gfs_global' and updates the existing forecast CSVs.
-    """
     os.makedirs(FORECAST_DIR, exist_ok=True)
 
     for ticker, (name, tz, lat, lon) in cfg.CITIES.items():
@@ -284,7 +250,6 @@ def fix_gfs_forecasts():
 
         df = pd.read_csv(path, parse_dates=["date"])
 
-        # Skip if already migrated
         if "fcst_gfs_global" in df.columns and "fcst_gfs_seamless" not in df.columns:
             log.info("Skipping %s — already migrated to gfs_global", name)
             continue
@@ -319,18 +284,14 @@ def fix_gfs_forecasts():
             gfs_df.rename(columns={"time": "date", "temperature_2m_max": "fcst_gfs_global"}, inplace=True)
             gfs_df["date"] = pd.to_datetime(gfs_df["date"])
 
-            # Drop old gfs_seamless column if present
             if "fcst_gfs_seamless" in df.columns:
                 df.drop(columns=["fcst_gfs_seamless"], inplace=True)
 
-            # Drop old gfs_global column if present (re-run safety)
             if "fcst_gfs_global" in df.columns:
                 df.drop(columns=["fcst_gfs_global"], inplace=True)
 
-            # Merge new gfs_global data
             df = df.merge(gfs_df[["date", "fcst_gfs_global"]], on="date", how="left")
 
-            # Reorder columns: ticker, fcst_gfs_global, then the rest
             cols = ["date", "ticker", "fcst_gfs_global"] + [
                 c for c in df.columns if c not in ("date", "ticker", "fcst_gfs_global")
             ]
@@ -345,9 +306,7 @@ def fix_gfs_forecasts():
 
     log.info("GFS forecast migration complete.")
 
-
 def load_forecasts() -> pd.DataFrame:
-    """Load all forecast CSVs."""
     frames = []
     for ticker in cfg.CITY_TICKERS:
         path = os.path.join(FORECAST_DIR, f"{ticker}_forecasts.csv")
@@ -359,11 +318,7 @@ def load_forecasts() -> pd.DataFrame:
         raise FileNotFoundError("No forecast data found. Run fetch_weather_forecasts() first.")
     return pd.concat(frames, ignore_index=True)
 
-
-# ── Climate indices ──────────────────────────────────────────────────
-
 def fetch_climate_indices():
-    """Fetch ENSO, AO, NAO, PNA from NOAA CPC."""
     os.makedirs(CLIMATE_DIR, exist_ok=True)
 
     _fetch_enso()
@@ -373,9 +328,7 @@ def fetch_climate_indices():
 
     log.info("Climate indices fetch complete.")
 
-
 def _fetch_enso():
-    """Fetch ONI ENSO index."""
     out = os.path.join(CLIMATE_DIR, "enso_oni.csv")
     if os.path.exists(out):
         log.info("ENSO ONI already fetched")
@@ -387,7 +340,7 @@ def _fetch_enso():
         resp.raise_for_status()
         lines = resp.text.strip().split("\n")
         rows = []
-        for line in lines[1:]:  # skip header
+        for line in lines[1:]:
             parts = line.split()
             if len(parts) >= 4:
                 season = parts[0]
@@ -404,9 +357,7 @@ def _fetch_enso():
     except Exception as e:
         log.warning("ENSO fetch failed: %s", e)
 
-
 def _fetch_teleconnection(name: str, url: str):
-    """Fetch a CPC teleconnection index in their standard monthly table format."""
     out = os.path.join(CLIMATE_DIR, f"{name}.csv")
     if os.path.exists(out):
         log.info("%s already fetched", name.upper())
@@ -417,7 +368,7 @@ def _fetch_teleconnection(name: str, url: str):
         resp.raise_for_status()
         lines = resp.text.strip().split("\n")
         rows = []
-        for line in lines[1:]:  # skip header
+        for line in lines[1:]:
             parts = line.split()
             if len(parts) < 13:
                 continue
@@ -428,7 +379,7 @@ def _fetch_teleconnection(name: str, url: str):
             for month_idx, val_str in enumerate(parts[1:13], start=1):
                 try:
                     val = float(val_str)
-                    if val < -90:  # missing value sentinel
+                    if val < -90:
                         val = np.nan
                     rows.append({"date": pd.Timestamp(year, month_idx, 1), f"{name}": val})
                 except ValueError:
@@ -439,9 +390,7 @@ def _fetch_teleconnection(name: str, url: str):
     except Exception as e:
         log.warning("%s fetch failed: %s", name.upper(), e)
 
-
 def load_climate_indices() -> pd.DataFrame:
-    """Load all climate index CSVs and merge on date (monthly, forward-filled to daily)."""
     date_range = pd.date_range(cfg.TRAIN_START, cfg.TEST_END, freq="D")
     result = pd.DataFrame({"date": date_range})
 
@@ -451,14 +400,13 @@ def load_climate_indices() -> pd.DataFrame:
             log.warning("Missing climate index: %s", name)
             continue
         df = pd.read_csv(path, parse_dates=["date"])
+        df["date"] = pd.to_datetime(df["date"]).dt.as_unit("ns")
         col = [c for c in df.columns if c != "date"][0]
         df = df.sort_values("date")
+        result["date"] = pd.to_datetime(result["date"]).dt.as_unit("ns")
         result = pd.merge_asof(result.sort_values("date"), df, on="date", direction="backward")
 
     return result
-
-
-# ── Main entry point ─────────────────────────────────────────────────
 
 if __name__ == "__main__":
     fetch_nws_daily()

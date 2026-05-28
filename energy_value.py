@@ -1,19 +1,3 @@
-"""
-ERCOT Energy Procurement Economic Value Analysis.
-
-Quantifies the dollar savings a utility would realize by using our
-bias-correction neural network instead of raw NWP ensemble mean
-forecasts for day-ahead electricity procurement.
-
-Methodology:
-  1. Map model cities to ERCOT (Austin, Dallas, Houston, San Antonio).
-  2. Population-weight city forecasts to get an ERCOT-wide temperature.
-  3. Compute load forecast error = (forecast - actual) × MW/°F sensitivity.
-  4. Cost of error = |load_error_MW| × DA-RT spread × peak hours.
-  5. Savings = NWP cost − NN cost.
-
-Key assumptions documented in ECONOMIC_ANALYSIS.md.
-"""
 
 import os
 import numpy as np
@@ -33,40 +17,24 @@ NWP_DISPLAY_NAMES = {
     "fcst_ncep_hrrr_conus": "HRRR",
 }
 
-# ── Constants ───────────────────────────────────────────────────────────
-
 ERCOT_CITIES = {
-    "KXHIGHTHOU":  0.35,  # Houston — largest load center
-    "KXHIGHTDAL":  0.30,  # Dallas-Fort Worth
-    "KXHIGHTSATX": 0.20,  # San Antonio
-    "KXHIGHAUS":   0.15,  # Austin
+    "KXHIGHTHOU":  0.35,
+    "KXHIGHTDAL":  0.30,
+    "KXHIGHTSATX": 0.20,
+    "KXHIGHAUS":   0.15,
 }
 
-# Temperature-load sensitivity (MW per °F above cooling threshold).
-# Source: ERCOT CDR reports; Considine (2000); Sailor & Muñoz (1997).
 DEFAULT_SENSITIVITY_MW_PER_F = 500.0
 
-# Cooling degree threshold (°F) — AC load ramps above this.
 DEFAULT_COOLING_THRESHOLD_F = 65.0
 
-# Day-ahead minus real-time price spread ($/MWh).
-# Base case: flat $20/MWh.  Seasonal variant: Jun-Sep $40, rest $10.
 DEFAULT_DA_RT_SPREAD = 20.0
 
-# Peak hours per day during which temperature drives load.
-PEAK_HOURS = 8  # HE 13–20
+PEAK_HOURS = 8
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "outputs", "energy")
 
-
-# ── Core functions ──────────────────────────────────────────────────────
-
 def build_ercot_daily(df: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate city-level predictions to ERCOT-wide daily values.
-
-    Returns one row per date with population-weighted NN forecast,
-    NWP ensemble forecast, individual NWP model forecasts, and actual temperature.
-    """
     ercot = df[df["ticker"].isin(ERCOT_CITIES)].copy()
     ercot["weight"] = ercot["ticker"].map(ERCOT_CITIES)
 
@@ -92,40 +60,23 @@ def build_ercot_daily(df: pd.DataFrame) -> pd.DataFrame:
     agg["month"] = agg["date"].dt.month
     return agg
 
-
 def compute_load_error(
     forecast: np.ndarray,
     actual: np.ndarray,
     sensitivity: float = DEFAULT_SENSITIVITY_MW_PER_F,
     threshold: float = DEFAULT_COOLING_THRESHOLD_F,
 ) -> np.ndarray:
-    """Load forecast error in MW (positive = over-forecast).
-
-    Only counted on days when either forecast or actual exceeds
-    the cooling threshold (i.e. AC is running or was expected to run).
-    """
     cooling_relevant = (forecast > threshold) | (actual > threshold)
     error_f = forecast - actual
     return np.where(cooling_relevant, error_f * sensitivity, 0.0)
-
 
 def compute_daily_cost(
     load_error_mw: np.ndarray,
     da_rt_spread: float | np.ndarray = DEFAULT_DA_RT_SPREAD,
 ) -> np.ndarray:
-    """Cost of load forecast error ($/day).
-
-    Cost = |load_error_MW| × |DA-RT spread| × peak hours.
-    Over-forecast → bought too much DA, sell back at lower RT.
-    Under-forecast → must buy shortfall at higher RT.
-    Either direction costs money.
-    """
     return np.abs(load_error_mw) * np.abs(da_rt_spread) * PEAK_HOURS
 
-
-
 def load_real_ercot_prices() -> pd.DataFrame:
-    """Load real ERCOT HB_HOUSTON peak-hour DA-RT spread from data/ercot_prices.csv."""
     path = os.path.join(cfg.DATA_DIR, "ercot_prices.csv")
     if not os.path.exists(path):
         raise FileNotFoundError(
@@ -135,19 +86,13 @@ def load_real_ercot_prices() -> pd.DataFrame:
     prices = pd.read_csv(path, parse_dates=["date"])
     return prices
 
-
 def run_ercot_analysis(
     df: pd.DataFrame,
     sensitivity: float = DEFAULT_SENSITIVITY_MW_PER_F,
     threshold: float = DEFAULT_COOLING_THRESHOLD_F,
 ) -> pd.DataFrame:
-    """Full ERCOT value calculation using real ERCOT HB_HOUSTON prices.
-
-    Computes costs for NN, NWP ensemble mean, and each individual NWP model.
-    """
     daily = build_ercot_daily(df)
 
-    # Load errors — NN and ensemble mean
     daily["nn_load_error_mw"] = compute_load_error(
         daily["nn_forecast"].values, daily["actual"].values,
         sensitivity, threshold,
@@ -157,7 +102,6 @@ def run_ercot_analysis(
         sensitivity, threshold,
     )
 
-    # Load errors — individual NWP models
     for col in NWP_COLS:
         if col in daily.columns:
             daily[f"{col}_load_error_mw"] = compute_load_error(
@@ -165,7 +109,6 @@ def run_ercot_analysis(
                 sensitivity, threshold,
             )
 
-    # Real ERCOT DA-RT spread
     prices = load_real_ercot_prices()
     daily = daily.merge(
         prices[["date", "da_rt_spread", "dam_price_avg", "rtm_price_avg"]],
@@ -178,7 +121,6 @@ def run_ercot_analysis(
     daily["daily_savings"] = daily["nwp_cost"] - daily["nn_cost"]
     daily["cumulative_savings"] = daily["daily_savings"].cumsum()
 
-    # Costs — individual NWP models
     for col in NWP_COLS:
         if col in daily.columns:
             daily[f"{col}_cost"] = compute_daily_cost(
@@ -187,13 +129,10 @@ def run_ercot_analysis(
 
     return daily
 
-
 def sensitivity_analysis(
     df: pd.DataFrame,
     sensitivities: list[float] = None,
 ) -> pd.DataFrame:
-    """Annual savings across a range of temperature-load sensitivities,
-    all using real ERCOT prices."""
     if sensitivities is None:
         sensitivities = [300, 400, 500, 600, 700]
 
@@ -204,9 +143,6 @@ def sensitivity_analysis(
         rows.append({"sensitivity_mw_per_f": sens, "annual_savings": annual})
     return pd.DataFrame(rows)
 
-
-# ── Visualization ───────────────────────────────────────────────────────
-
 def _dollar_fmt(x, _):
     if abs(x) >= 1e6:
         return f"${x / 1e6:.1f}M"
@@ -214,12 +150,9 @@ def _dollar_fmt(x, _):
         return f"${x / 1e3:.0f}K"
     return f"${x:.0f}"
 
-
 def plot_all(daily: pd.DataFrame, sens_df: pd.DataFrame):
-    """Generate and save all energy value plots."""
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # 1. Cumulative savings
     fig, ax = plt.subplots(figsize=(12, 5))
     ax.plot(daily["date"], daily["cumulative_savings"], color="green", lw=2)
     ax.axhline(0, color="gray", ls="--", lw=0.8)
@@ -231,7 +164,6 @@ def plot_all(daily: pd.DataFrame, sens_df: pd.DataFrame):
     fig.savefig(os.path.join(OUTPUT_DIR, "cumulative_savings.png"), dpi=150)
     plt.close(fig)
 
-    # 2. Daily load error comparison
     fig, ax = plt.subplots(figsize=(12, 5))
     ax.plot(daily["date"], daily["nn_load_error_mw"].abs(), alpha=0.5,
             label="NN |load error|", color="blue", lw=0.8)
@@ -244,7 +176,6 @@ def plot_all(daily: pd.DataFrame, sens_df: pd.DataFrame):
     fig.savefig(os.path.join(OUTPUT_DIR, "daily_load_error.png"), dpi=150)
     plt.close(fig)
 
-    # 3. Monthly savings
     monthly = daily.groupby(daily["date"].dt.to_period("M"))["daily_savings"].sum()
     fig, ax = plt.subplots(figsize=(10, 5))
     colors = ["green" if v >= 0 else "red" for v in monthly.values]
@@ -258,7 +189,6 @@ def plot_all(daily: pd.DataFrame, sens_df: pd.DataFrame):
     fig.savefig(os.path.join(OUTPUT_DIR, "monthly_savings.png"), dpi=150)
     plt.close(fig)
 
-    # 4. Sensitivity bar chart (real prices, varying MW/°F only)
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.bar(
         [f"{int(s)} MW/°F" for s in sens_df["sensitivity_mw_per_f"]],
@@ -276,7 +206,6 @@ def plot_all(daily: pd.DataFrame, sens_df: pd.DataFrame):
     fig.savefig(os.path.join(OUTPUT_DIR, "sensitivity.png"), dpi=150)
     plt.close(fig)
 
-    # 5. Savings vs temperature scatter
     fig, ax = plt.subplots(figsize=(8, 5))
     cooling_days = daily[daily["actual"] > DEFAULT_COOLING_THRESHOLD_F]
     ax.scatter(cooling_days["actual"], cooling_days["daily_savings"],
@@ -290,7 +219,6 @@ def plot_all(daily: pd.DataFrame, sens_df: pd.DataFrame):
     fig.savefig(os.path.join(OUTPUT_DIR, "savings_vs_temp.png"), dpi=150)
     plt.close(fig)
 
-    # 6. Error distributions
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.hist(daily["nn_load_error_mw"], bins=50, alpha=0.6, label="NN", color="blue")
     ax.hist(daily["nwp_load_error_mw"], bins=50, alpha=0.6, label="NWP", color="red")
@@ -302,9 +230,7 @@ def plot_all(daily: pd.DataFrame, sens_df: pd.DataFrame):
     fig.savefig(os.path.join(OUTPUT_DIR, "error_distributions.png"), dpi=150)
     plt.close(fig)
 
-
 def print_summary(daily: pd.DataFrame, sens_df: pd.DataFrame):
-    """Print summary statistics."""
     total_savings = daily["daily_savings"].sum()
     nn_total_cost = daily["nn_cost"].sum()
     nwp_total_cost = daily["nwp_cost"].sum()
@@ -339,7 +265,6 @@ def print_summary(daily: pd.DataFrame, sens_df: pd.DataFrame):
     print(f"\n  Days with positive savings:  {positive_days}/{total_days} ({positive_days/total_days*100:.1f}%)")
     print(f"  Avg daily savings:           ${total_savings / total_days:>10,.0f}")
 
-    # Summer vs non-summer
     summer = daily[(daily["month"] >= 6) & (daily["month"] <= 9)]
     winter = daily[~((daily["month"] >= 6) & (daily["month"] <= 9))]
     print(f"\n  Summer (Jun-Sep) savings:    ${summer['daily_savings'].sum():>12,.0f}")
@@ -350,9 +275,6 @@ def print_summary(daily: pd.DataFrame, sens_df: pd.DataFrame):
         marker = " <-- base case" if row["sensitivity_mw_per_f"] == 500 else ""
         print(f"    {int(row['sensitivity_mw_per_f']):>4} MW/°F: ${row['annual_savings']:>12,.0f}{marker}")
     print("=" * 65)
-
-
-# ── Main ────────────────────────────────────────────────────────────────
 
 def main():
     print("Loading data...")
@@ -369,11 +291,9 @@ def main():
     print(f"\nSaving plots to {OUTPUT_DIR}/")
     plot_all(daily, sens_df)
 
-    # Save data
     daily.to_csv(os.path.join(OUTPUT_DIR, "ercot_daily_results.csv"), index=False)
     sens_df.to_csv(os.path.join(OUTPUT_DIR, "sensitivity_results.csv"), index=False)
     print("Done.")
-
 
 if __name__ == "__main__":
     main()

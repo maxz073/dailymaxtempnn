@@ -1,10 +1,6 @@
-"""
-Configuration for the daily max temperature bias-correction neural network.
-"""
 from datetime import date
 import os
 
-# ── Data splits ──────────────────────────────────────────────────────
 TRAIN_START = date(2022, 1, 1)
 TRAIN_END = date(2024, 4, 16)
 VAL_START = date(2024, 4, 17)
@@ -15,8 +11,6 @@ TEST_END = date(2026, 4, 16)
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 CHECKPOINT_DIR = os.path.join(os.path.dirname(__file__), "checkpoints")
 
-# ── Cities ───────────────────────────────────────────────────────────
-# ticker -> (name, tz, lat, lon)
 CITIES = {
     "KXHIGHNY":     ("New York",        "US/Eastern",   40.71, -74.01),
     "KXHIGHCHI":    ("Chicago",         "US/Central",   41.88, -87.63),
@@ -40,37 +34,33 @@ CITIES = {
     "KXHIGHTNOLA":  ("New Orleans",     "US/Central",   29.95, -90.07),
 }
 
-# ── NWS station IDs (ACIS/FAA codes) ────────────────────────────────
-# Official NWS stations whose daily recorded high is the ground truth.
 NWS_STATIONS = {
-    "KXHIGHNY":    "NYC",   # Central Park
-    "KXHIGHCHI":   "ORD",   # O'Hare
-    "KXHIGHMIA":   "MIA",   # Miami Intl
-    "KXHIGHTBOS":  "BOS",   # Logan
-    "KXHIGHLAX":   "LAX",   # LAX
-    "KXHIGHAUS":   "AUS",   # Austin-Bergstrom
-    "KXHIGHTSFO":  "SFO",   # SFO
-    "KXHIGHTDAL":  "DFW",   # DFW
-    "KXHIGHPHIL":  "PHL",   # PHL
-    "KXHIGHTPHX":  "PHX",   # Sky Harbor
-    "KXHIGHTOKC":  "OKC",   # Will Rogers
-    "KXHIGHDEN":   "DEN",   # DIA
-    "KXHIGHTDC":   "DCA",   # Reagan National
-    "KXHIGHTSATX": "SAT",   # SAT
-    "KXHIGHTHOU":  "IAH",   # George Bush Intercontinental
-    "KXHIGHTMIN":  "MSP",   # MSP
-    "KXHIGHTATL":  "ATL",   # Hartsfield-Jackson
-    "KXHIGHTSEA":  "SEA",   # Sea-Tac
-    "KXHIGHTLV":   "LAS",   # Harry Reid
-    "KXHIGHTNOLA": "MSY",   # Louis Armstrong
+    "KXHIGHNY":    "NYC",
+    "KXHIGHCHI":   "ORD",
+    "KXHIGHMIA":   "MIA",
+    "KXHIGHTBOS":  "BOS",
+    "KXHIGHLAX":   "LAX",
+    "KXHIGHAUS":   "AUS",
+    "KXHIGHTSFO":  "SFO",
+    "KXHIGHTDAL":  "DFW",
+    "KXHIGHPHIL":  "PHL",
+    "KXHIGHTPHX":  "PHX",
+    "KXHIGHTOKC":  "OKC",
+    "KXHIGHDEN":   "DEN",
+    "KXHIGHTDC":   "DCA",
+    "KXHIGHTSATX": "SAT",
+    "KXHIGHTHOU":  "IAH",
+    "KXHIGHTMIN":  "MSP",
+    "KXHIGHTATL":  "ATL",
+    "KXHIGHTSEA":  "SEA",
+    "KXHIGHTLV":   "LAS",
+    "KXHIGHTNOLA": "MSY",
 }
 
 CITY_TICKERS = list(CITIES.keys())
 TICKER_TO_IDX = {t: i for i, t in enumerate(CITY_TICKERS)}
 N_CITIES = len(CITY_TICKERS)
 
-# ── City static metadata ─────────────────────────────────────────────
-# elevation_ft, coastal (bool), desert (bool), continentality (0-1)
 CITY_META = {
     "KXHIGHNY":    {"elevation_ft": 33,   "coastal": True,  "desert": False, "continentality": 0.40},
     "KXHIGHCHI":   {"elevation_ft": 594,  "coastal": False, "desert": False, "continentality": 0.70},
@@ -94,32 +84,29 @@ CITY_META = {
     "KXHIGHTNOLA": {"elevation_ft": 3,    "coastal": True,  "desert": False, "continentality": 0.20},
 }
 
-# ── Water body bearing (degrees) for onshore wind calculation ────────
-# Bearing from city to nearest major water body; None = inland.
 WATER_BODY_BEARING = {
-    "KXHIGHCHI":    90,    # Lake Michigan is east
-    "KXHIGHMIA":    180,   # Atlantic south
-    "KXHIGHTBOS":   90,    # harbor east
-    "KXHIGHLAX":    250,   # Pacific SW
-    "KXHIGHNY":     135,   # Atlantic SE
-    "KXHIGHPHIL":   135,   # Delaware Bay SE
-    "KXHIGHTSEA":   270,   # Puget Sound west
-    "KXHIGHTSFO":   270,   # Pacific west
-    "KXHIGHTNOLA":  180,   # Gulf south
-    "KXHIGHTHOU":   150,   # Gulf SE
-    "KXHIGHTATL":   None,  # inland
-    "KXHIGHAUS":    None,  # inland
-    "KXHIGHTDAL":   None,  # inland
-    "KXHIGHTOKC":   None,  # inland
-    "KXHIGHTPHX":   None,  # inland
-    "KXHIGHTLV":    None,  # inland
-    "KXHIGHDEN":    None,  # inland
-    "KXHIGHTMIN":   0,     # inland — Lake Superior is far
-    "KXHIGHTSATX":  None,  # inland
-    "KXHIGHTDC":    135,   # Chesapeake Bay SE
+    "KXHIGHCHI":    90,
+    "KXHIGHMIA":    180,
+    "KXHIGHTBOS":   90,
+    "KXHIGHLAX":    250,
+    "KXHIGHNY":     135,
+    "KXHIGHPHIL":   135,
+    "KXHIGHTSEA":   270,
+    "KXHIGHTSFO":   270,
+    "KXHIGHTNOLA":  180,
+    "KXHIGHTHOU":   150,
+    "KXHIGHTATL":   None,
+    "KXHIGHAUS":    None,
+    "KXHIGHTDAL":   None,
+    "KXHIGHTOKC":   None,
+    "KXHIGHTPHX":   None,
+    "KXHIGHTLV":    None,
+    "KXHIGHDEN":    None,
+    "KXHIGHTMIN":   0,
+    "KXHIGHTSATX":  None,
+    "KXHIGHTDC":    135,
 }
 
-# ── Model hyperparameters ────────────────────────────────────────────
 MODEL1_HP = {
     "hidden_dims": [128, 64, 32],
     "dropout": [0.2, 0.15, 0.0],

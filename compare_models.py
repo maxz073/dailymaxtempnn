@@ -1,12 +1,3 @@
-"""
-Compare forecast models against NWS daily recorded high temperatures.
-
-Models compared:
-  - 6 NWP forecast models (GFS, ECMWF, ICON, GEM, JMA, HRRR) + their ensemble mean
-  - Neural net bias-correction model
-
-Metrics: MAE, RMSE, Bias (mean error), correlation, % within 1/2/3 deg F
-"""
 import os
 import logging
 
@@ -19,9 +10,7 @@ import data_fetch
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-
 def compute_metrics(y_true, y_pred):
-    """Compute comparison metrics between true and predicted values."""
     err = y_pred - y_true
     abs_err = np.abs(err)
     return {
@@ -38,9 +27,8 @@ def compute_metrics(y_true, y_pred):
         "N": len(y_true),
     }
 
-
 def run_comparison():
-    # ── Load data ────────────────────────────────────────────────────
+
     log.info("Loading NWS daily highs...")
     nws = data_fetch.load_nws_daily()
     nws["date"] = pd.to_datetime(nws["date"])
@@ -49,23 +37,19 @@ def run_comparison():
     forecasts = data_fetch.load_forecasts()
     forecasts["date"] = pd.to_datetime(forecasts["date"])
 
-    # Merge NWS + forecasts
     df = nws.merge(forecasts, on=["date", "ticker"], how="inner")
     log.info("Merged NWS + forecasts: %d rows", len(df))
 
-    # Forecast columns
     fcst_cols = [c for c in df.columns if c.startswith("fcst_")]
-    # Fill NaN forecasts per city (means computed from train only)
+
     _train_fill_mask = df["date"] <= pd.Timestamp(cfg.TRAIN_END)
     for col in fcst_cols:
         train_city_means = df.loc[_train_fill_mask].groupby("ticker")[col].mean()
         df[col] = df[col].fillna(df["ticker"].map(train_city_means))
     df["fcst_ensemble_mean"] = df[fcst_cols].mean(axis=1)
 
-    # Drop rows with NaN NWS high
     df = df.dropna(subset=["nws_high"]).reset_index(drop=True)
 
-    # ── Load neural net predictions (all splits, concatenated) ───────
     nn_all_preds = {}
     pred_dfs = []
     for split in ["train", "val", "test"]:
@@ -79,7 +63,6 @@ def run_comparison():
         nn_all_preds["NN Bias-Correction"] = pd.concat(pred_dfs, ignore_index=True)
         log.info("Combined NN predictions: %d rows total", len(next(iter(nn_all_preds.values()))))
 
-    # ── Define date splits ───────────────────────────────────────────
     splits = {
         "Full (2022-2026)": (pd.Timestamp(cfg.TRAIN_START), pd.Timestamp(cfg.TEST_END)),
         "Train (2022-2024)": (pd.Timestamp(cfg.TRAIN_START), pd.Timestamp(cfg.TRAIN_END)),
@@ -87,7 +70,6 @@ def run_comparison():
         "Test (2026)": (pd.Timestamp(cfg.TEST_START), pd.Timestamp(cfg.TEST_END)),
     }
 
-    # ── Compare NWP models across all splits ─────────────────────────
     nwp_models = fcst_cols + ["fcst_ensemble_mean"]
     nwp_display = {
         "fcst_gfs_global": "GFS",
@@ -113,7 +95,6 @@ def run_comparison():
 
         results = []
 
-        # NWP models (available for all splits)
         for col in nwp_models:
             mask = split_df[col].notna()
             if mask.sum() < 10:
@@ -123,7 +104,6 @@ def run_comparison():
             name = nwp_display.get(col, col)
             results.append((name, m))
 
-        # Neural net model (available for any split covered by predictions)
         for name, pred_df in nn_all_preds.items():
             split_preds = pred_df[(pred_df["date"] >= start) & (pred_df["date"] <= end)]
             merged = split_preds.merge(nws[["date", "ticker", "nws_high"]],
@@ -133,7 +113,6 @@ def run_comparison():
                 m = compute_metrics(merged["nws_high"].values, merged["mu"].values)
                 results.append((name, m))
 
-        # Sort by MAE
         results.sort(key=lambda x: x[1]["MAE"])
 
         for name, m in results:
@@ -141,7 +120,6 @@ def run_comparison():
                   f"{m['Corr']:>5.3f} {m['Within_1F']:>5.1f}% {m['Within_2F']:>5.1f}% "
                   f"{m['Within_3F']:>5.1f}% {m['P50_err']:>4.1f}F {m['P90_err']:>4.1f}F {m['P95_err']:>4.1f}F")
 
-    # ── Per-city breakdown (test set) ────────────────────────────────
     test_df = df[(df["date"] >= pd.Timestamp(cfg.TEST_START)) &
                  (df["date"] <= pd.Timestamp(cfg.TEST_END))]
 
@@ -150,7 +128,6 @@ def run_comparison():
         print(f"  Per-City MAE on Test Set (2026)  —  NWP models vs NWS recorded high")
         print(f"{'='*100}")
 
-        # Build per-city MAE for each model
         city_results = []
         for ticker in sorted(cfg.CITY_TICKERS):
             city_name = cfg.CITIES[ticker][0]
@@ -166,7 +143,6 @@ def run_comparison():
                     name = nwp_display.get(col, col)
                     row[name] = mae
 
-            # Add NN model if available (test period only for per-city breakdown)
             if "NN Bias-Correction" in nn_all_preds:
                 nn_pred = nn_all_preds["NN Bias-Correction"]
                 nn_pred_test = nn_pred[(nn_pred["date"] >= pd.Timestamp(cfg.TEST_START)) &
@@ -181,7 +157,7 @@ def run_comparison():
             city_results.append(row)
 
         city_df_out = pd.DataFrame(city_results)
-        # Format
+
         model_cols = [c for c in city_df_out.columns if c != "City"]
         header = f"{'City':<16}" + "".join(f"{c:>14}" for c in model_cols)
         print(header)
@@ -196,7 +172,6 @@ def run_comparison():
                     line += f"{'—':>14}"
             print(line)
 
-        # Print averages
         print("-" * len(header))
         line = f"{'AVERAGE':<16}"
         for c in model_cols:
@@ -204,7 +179,6 @@ def run_comparison():
             line += f"{vals.mean():>13.2f}F" if len(vals) > 0 else f"{'—':>14}"
         print(line)
 
-    # ── Open-Meteo reanalysis vs NWS comparison ─────────────────────
     log.info("Loading Open-Meteo archive for reanalysis comparison...")
     archive = data_fetch.load_archive_daily()
     archive["date"] = pd.to_datetime(archive["date"])
@@ -238,7 +212,6 @@ def run_comparison():
         m = compute_metrics(city_comp["nws_high"].values,
                             city_comp["temperature_2m_max"].values)
         print(f"{city_name:<16} {m['MAE']:>6.2f}F {m['Bias']:>+7.2f}F {m['RMSE']:>6.2f}F")
-
 
 if __name__ == "__main__":
     run_comparison()

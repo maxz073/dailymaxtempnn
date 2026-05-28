@@ -1,50 +1,20 @@
-"""
-Fetch historical Kalshi temperature contract data for backtesting.
-
-Pulls settlement prices, last-traded prices, and trade history for all 20
-KXHIGH daily-max-temperature series across the test period (2025-04-17 to
-2026-04-16).
-
-All endpoints used are PUBLIC (no authentication required):
-  - GET /historical/markets?event_ticker=...   (settled before 2026-03-20)
-  - GET /markets?event_ticker=...              (settled after  2026-03-20)
-  - GET /historical/trades?ticker=...          (trades before  2026-03-20)
-  - GET /markets/trades?ticker=...             (trades after   2026-03-20)
-
-Ticker format:
-  Series:  KXHIGHNY
-  Event:   KXHIGHNY-25APR17       (series-YYMMMDD)
-  Market:  KXHIGHNY-25APR17-T67   (event-Tthreshold)
-
-Usage:
-    python fetch_kalshi_prices.py                  # fetch all cities, full period
-    python fetch_kalshi_prices.py --city KXHIGHNY  # single city
-    python fetch_kalshi_prices.py --start 2025-06-01 --end 2025-06-30
-    python fetch_kalshi_prices.py --trades          # also fetch individual trades
-"""
 
 import argparse
 import csv
-import json
 import os
-import sys
 import time
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta
 from typing import Optional
 
 import requests
 
-# ── Configuration ────────────────────────────────────────────────────────
-
 BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 
-# Historical / live cutoff (from /historical/cutoff, checked 2026-05-19)
 HISTORICAL_CUTOFF = date(2026, 3, 20)
 
 TEST_START = date(2025, 4, 17)
 TEST_END = date(2026, 4, 16)
 
-# All 20 city series tickers
 SERIES_TICKERS = [
     "KXHIGHNY", "KXHIGHCHI", "KXHIGHMIA", "KXHIGHTBOS", "KXHIGHLAX",
     "KXHIGHAUS", "KXHIGHTSFO", "KXHIGHTDAL", "KXHIGHPHIL", "KXHIGHTPHX",
@@ -54,31 +24,21 @@ SERIES_TICKERS = [
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
-# Rate-limit: Kalshi public API is generous but be polite
-REQUEST_DELAY = 1.0  # seconds between requests
-
-
-# ── Helpers ──────────────────────────────────────────────────────────────
+REQUEST_DELAY = 1.0
 
 MONTH_ABBR = {
     1: "JAN", 2: "FEB", 3: "MAR", 4: "APR", 5: "MAY", 6: "JUN",
     7: "JUL", 8: "AUG", 9: "SEP", 10: "OCT", 11: "NOV", 12: "DEC",
 }
 
-
 def date_to_event_suffix(d: date) -> str:
-    """Convert date to Kalshi event suffix: '25APR17'."""
     return f"{d.year % 100:02d}{MONTH_ABBR[d.month]}{d.day:02d}"
 
-
 def event_ticker(series: str, d: date) -> str:
-    """Build event ticker: KXHIGHNY-25APR17."""
     return f"{series}-{date_to_event_suffix(d)}"
 
-
 def parse_market_date(event_tick: str) -> Optional[date]:
-    """Extract the date from an event ticker like KXHIGHNY-25APR17."""
-    suffix = event_tick.split("-")[-1]  # '25APR17'
+    suffix = event_tick.split("-")[-1]
     if len(suffix) < 6:
         return None
     try:
@@ -90,12 +50,10 @@ def parse_market_date(event_tick: str) -> Optional[date]:
     except (ValueError, KeyError):
         return None
 
-
 def parse_threshold(ticker: str) -> Optional[float]:
-    """Extract threshold from market ticker like KXHIGHNY-25APR17-T67."""
     parts = ticker.split("-T")
     if len(parts) < 2:
-        # Try B-suffix (bracket markets): KXHIGHNY-25APR17-B63.5
+
         parts = ticker.split("-B")
         if len(parts) < 2:
             return None
@@ -104,9 +62,7 @@ def parse_threshold(ticker: str) -> Optional[float]:
     except ValueError:
         return None
 
-
 def api_get(endpoint: str, params: dict = None, max_retries: int = 3) -> dict:
-    """Make a GET request to the Kalshi API with retries."""
     url = f"{BASE_URL}{endpoint}"
     for attempt in range(max_retries):
         try:
@@ -125,9 +81,7 @@ def api_get(endpoint: str, params: dict = None, max_retries: int = 3) -> dict:
             raise RuntimeError(f"API request failed after {max_retries} tries: {e}")
     return {}
 
-
 def paginate_markets(endpoint: str, params: dict) -> list[dict]:
-    """Paginate through a markets endpoint, collecting all results."""
     all_markets = []
     cursor = None
     while True:
@@ -143,9 +97,7 @@ def paginate_markets(endpoint: str, params: dict) -> list[dict]:
         time.sleep(REQUEST_DELAY)
     return all_markets
 
-
 def paginate_trades(endpoint: str, params: dict) -> list[dict]:
-    """Paginate through a trades endpoint, collecting all results."""
     all_trades = []
     cursor = None
     while True:
@@ -161,14 +113,7 @@ def paginate_trades(endpoint: str, params: dict) -> list[dict]:
         time.sleep(REQUEST_DELAY)
     return all_trades
 
-
-# ── Core fetch functions ─────────────────────────────────────────────────
-
 def fetch_markets_for_event(series: str, d: date) -> list[dict]:
-    """Fetch all contract markets for a single city-day event.
-
-    Routes to historical or live endpoint based on cutoff date.
-    """
     ev = event_ticker(series, d)
     if d < HISTORICAL_CUTOFF:
         endpoint = "/historical/markets"
@@ -176,18 +121,14 @@ def fetch_markets_for_event(series: str, d: date) -> list[dict]:
         endpoint = "/markets"
     return paginate_markets(endpoint, {"event_ticker": ev})
 
-
 def fetch_trades_for_market(ticker: str, market_date: date) -> list[dict]:
-    """Fetch all trades for a single market ticker."""
     if market_date < HISTORICAL_CUTOFF:
         endpoint = "/historical/trades"
     else:
         endpoint = "/markets/trades"
     return paginate_trades(endpoint, {"ticker": ticker})
 
-
 def extract_market_row(m: dict) -> dict:
-    """Extract a flat row from a market API response object."""
     ticker = m.get("ticker", "")
     event_tick = m.get("event_ticker", "")
     series = event_tick.rsplit("-", 1)[0] if "-" in event_tick else ""
@@ -195,7 +136,6 @@ def extract_market_row(m: dict) -> dict:
     mdate = parse_market_date(event_tick)
     threshold = parse_threshold(ticker)
 
-    # Determine strike direction
     strike_type = m.get("strike_type", "")
     floor_strike = m.get("floor_strike")
     cap_strike = m.get("cap_strike")
@@ -205,7 +145,7 @@ def extract_market_row(m: dict) -> dict:
         "series_ticker": series,
         "event_ticker": event_tick,
         "market_ticker": ticker,
-        "strike_type": strike_type,       # "greater", "less", "between"
+        "strike_type": strike_type,
         "threshold": threshold,
         "floor_strike": floor_strike if floor_strike is not None else "",
         "cap_strike": cap_strike if cap_strike is not None else "",
@@ -222,16 +162,12 @@ def extract_market_row(m: dict) -> dict:
         "status": m.get("status", ""),
     }
 
-
-# ── Main pipeline ────────────────────────────────────────────────────────
-
 def fetch_all_markets(
     series_list: list[str],
     start: date,
     end: date,
     progress: bool = True,
 ) -> list[dict]:
-    """Fetch market data for all cities across the date range."""
     rows = []
     total_days = (end - start).days + 1
 
@@ -262,12 +198,10 @@ def fetch_all_markets(
 
     return rows
 
-
 def fetch_all_trades(
     market_rows: list[dict],
     progress: bool = True,
 ) -> list[dict]:
-    """Fetch trade-level data for all markets found."""
     trade_rows = []
     tickers = [(r["market_ticker"], r["date"]) for r in market_rows
                if r["market_ticker"] and r["volume"] and float(r["volume"]) > 0]
@@ -298,9 +232,7 @@ def fetch_all_trades(
 
     return trade_rows
 
-
 def save_csv(rows: list[dict], filepath: str):
-    """Write rows to CSV."""
     if not rows:
         print(f"  No data to save to {filepath}")
         return
@@ -311,9 +243,6 @@ def save_csv(rows: list[dict], filepath: str):
         writer.writeheader()
         writer.writerows(rows)
     print(f"  Saved {len(rows)} rows to {filepath}")
-
-
-# ── CLI ──────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
@@ -350,7 +279,6 @@ def main():
     series_list = [args.city] if args.city else SERIES_TICKERS
     progress = not args.quiet
 
-    # Validate city tickers
     for s in series_list:
         if s not in SERIES_TICKERS:
             print(f"Warning: {s} not in known tickers. Proceeding anyway.")
@@ -362,13 +290,11 @@ def main():
     print(f"  Trades: {'yes' if args.trades else 'no'}")
     print()
 
-    # ── Fetch market-level data ──────────────────────────────────────
     market_rows = fetch_all_markets(series_list, start, end, progress)
 
     markets_file = os.path.join(args.output_dir, "kalshi_prices.csv")
     save_csv(market_rows, markets_file)
 
-    # Summary stats
     if market_rows:
         n_events = len(set(r["event_ticker"] for r in market_rows))
         n_markets = len(market_rows)
@@ -377,14 +303,12 @@ def main():
         print(f"\n  Summary: {n_events} event-days, "
               f"{n_markets} contracts, {n_with_volume} with volume")
 
-    # ── Fetch trade-level data (optional) ────────────────────────────
     if args.trades and market_rows:
         trade_rows = fetch_all_trades(market_rows, progress)
         trades_file = os.path.join(args.output_dir, "kalshi_trades.csv")
         save_csv(trade_rows, trades_file)
 
     print("\nDone.")
-
 
 if __name__ == "__main__":
     main()

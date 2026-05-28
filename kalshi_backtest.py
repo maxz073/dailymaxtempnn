@@ -1,19 +1,3 @@
-"""
-Kalshi Temperature Event Market Backtesting (Real Prices).
-
-Uses real Kalshi contract prices from data/kalshi_prices.csv.
-Compares our NN model probability against actual market last_price
-to identify mispriced contracts.
-
-Strategy A: Hold to expiry — buy mispriced contracts, settle at end of day.
-Strategy B: Trade on convergence — exit when edge narrows, with 3× stop-loss.
-
-Also runs the same strategies using GFS, HRRR, and ECMWF individually.
-
-Two analysis scopes:
-  1. Austin full-year (364 days, all of test period)
-  2. All 4 ERCOT cities on overlapping period (~64 days, Feb-Apr 2026)
-"""
 
 import os
 import numpy as np
@@ -23,26 +7,19 @@ from scipy.stats import norm
 from matplotlib.ticker import FuncFormatter
 
 import config as cfg
-from economic_data_prep import load_test_with_nwp, NWP_COLS
-
-# ── Constants ───────────────────────────────────────────────────────────
+from economic_data_prep import load_test_with_nwp
 
 CONTRACTS_PER_TRADE = 250
 DEFAULT_EDGE_THRESHOLD = 0.10
 DEFAULT_STOP_LOSS_MULT = 3.0
 DEFAULT_CONVERGENCE_RATE = 0.6
 
-# Kalshi taker fee: lesser of 7 cents/contract or 7% of potential profit.
 KALSHI_FEE_RATE = 0.07
 KALSHI_FEE_CAP_CENTS = 7.0
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "outputs", "kalshi")
 
-
-# ── Load real Kalshi data ───────────────────────────────────────────────
-
 def load_kalshi_prices() -> pd.DataFrame:
-    """Load real Kalshi contract data."""
     path = os.path.join(cfg.DATA_DIR, "kalshi_prices.csv")
     if not os.path.exists(path):
         raise FileNotFoundError(
@@ -53,19 +30,10 @@ def load_kalshi_prices() -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"])
     return df
 
-
-# ── Probability functions ───────────────────────────────────────────────
-
 def model_prob_for_contract(
     mu: float, sigma: float,
     strike_type: str, floor_strike: float, cap_strike: float,
 ) -> float:
-    """Compute model P(YES) for a Kalshi contract given NN (mu, sigma).
-
-    - greater: P(T > floor_strike)
-    - less:    P(T < cap_strike)
-    - between: P(floor_strike < T < cap_strike)
-    """
     if strike_type == "greater":
         return float(norm.sf(floor_strike, loc=mu, scale=sigma))
     elif strike_type == "less":
@@ -77,28 +45,11 @@ def model_prob_for_contract(
         )
     return np.nan
 
-
-def nwp_prob_for_contract(
-    forecast: float, hist_std: float,
-    strike_type: str, floor_strike: float, cap_strike: float,
-) -> float:
-    """Compute P(YES) for a contract using a single NWP model."""
-    return model_prob_for_contract(forecast, hist_std,
-                                   strike_type, floor_strike, cap_strike)
-
-
-# ── Build contracts with model probabilities ────────────────────────────
-
 def build_contracts(
     kalshi: pd.DataFrame,
     preds: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Join real Kalshi contracts with NN model probabilities.
 
-    Returns one row per contract with:
-      market_prob (real last_price), model_prob (NN), edge, settlement.
-    """
-    # Merge on date + series_ticker = ticker
     merged = kalshi.merge(
         preds[["date", "ticker", "mu", "sigma"]],
         left_on=["date", "series_ticker"],
@@ -106,7 +57,6 @@ def build_contracts(
         how="inner",
     )
 
-    # Compute model probability for each contract
     merged["model_prob"] = merged.apply(
         lambda r: model_prob_for_contract(
             r["mu"], r["sigma"],
@@ -115,17 +65,13 @@ def build_contracts(
         axis=1,
     )
 
-    # Market probability = last traded price (0-1)
     merged["market_prob"] = merged["last_price"].astype(float)
 
-    # Edge
     merged["edge"] = merged["model_prob"] - merged["market_prob"]
 
-    # Settlement (already 0 or 1 in the data)
     merged["settlement"] = merged["settlement_value"].astype(float)
 
     return merged
-
 
 def build_nwp_contracts(
     kalshi: pd.DataFrame,
@@ -133,7 +79,6 @@ def build_nwp_contracts(
     nwp_col: str,
     hist_std: float,
 ) -> pd.DataFrame:
-    """Build contracts using a single NWP model as probability source."""
     merged = kalshi.merge(
         preds[["date", "ticker", nwp_col]],
         left_on=["date", "series_ticker"],
@@ -142,7 +87,7 @@ def build_nwp_contracts(
     )
 
     merged["model_prob"] = merged.apply(
-        lambda r: nwp_prob_for_contract(
+        lambda r: model_prob_for_contract(
             r[nwp_col], hist_std,
             r["strike_type"], r["floor_strike"], r["cap_strike"],
         ),
@@ -154,27 +99,15 @@ def build_nwp_contracts(
 
     return merged
 
-
-# ── Fee calculation ─────────────────────────────────────────────────────
-
 def kalshi_taker_fee_cents(entry_price_cents: np.ndarray) -> np.ndarray:
-    """Kalshi taker fee per contract in cents.
-
-    Fee = min(7% of potential profit, 7 cents).
-    Potential profit = 100 - entry_price.
-    """
     potential_profit = 100.0 - entry_price_cents
     pct_fee = KALSHI_FEE_RATE * potential_profit
     return np.minimum(pct_fee, KALSHI_FEE_CAP_CENTS)
-
-
-# ── Strategy A: Hold to Expiry ──────────────────────────────────────────
 
 def backtest_hold_to_expiry(
     contracts: pd.DataFrame,
     edge_threshold: float = DEFAULT_EDGE_THRESHOLD,
 ) -> pd.DataFrame:
-    """Buy mispriced contracts, hold to settlement."""
     trades = contracts[contracts["edge"].abs() > edge_threshold].copy()
     if trades.empty:
         return trades
@@ -201,16 +134,12 @@ def backtest_hold_to_expiry(
 
     return trades
 
-
-# ── Strategy B: Convergence + Stop-Loss ─────────────────────────────────
-
 def backtest_convergence_trade(
     contracts: pd.DataFrame,
     edge_threshold: float = DEFAULT_EDGE_THRESHOLD,
     stop_loss_mult: float = DEFAULT_STOP_LOSS_MULT,
     convergence_rate: float = DEFAULT_CONVERGENCE_RATE,
 ) -> pd.DataFrame:
-    """Trade on edge, exit when market converges or stop-loss triggers."""
     trades = contracts[contracts["edge"].abs() > edge_threshold].copy()
     if trades.empty:
         return trades
@@ -264,9 +193,6 @@ def backtest_convergence_trade(
 
     return trades
 
-
-# ── Metrics ─────────────────────────────────────────────────────────────
-
 def compute_metrics(trades: pd.DataFrame, label: str = "") -> dict:
     if trades.empty:
         return {"label": label, "n_trades": 0, "total_pnl": 0,
@@ -290,7 +216,6 @@ def compute_metrics(trades: pd.DataFrame, label: str = "") -> dict:
         "trading_days": len(daily_pnl),
     }
 
-
 def metrics_by_city(trades: pd.DataFrame) -> pd.DataFrame:
     if trades.empty:
         return pd.DataFrame()
@@ -305,7 +230,6 @@ def metrics_by_city(trades: pd.DataFrame) -> pd.DataFrame:
         .sort_values("total_pnl", ascending=False)
     )
 
-
 def metrics_by_month(trades: pd.DataFrame) -> pd.DataFrame:
     if trades.empty:
         return pd.DataFrame()
@@ -319,9 +243,6 @@ def metrics_by_month(trades: pd.DataFrame) -> pd.DataFrame:
             win_rate=("pnl_dollars", lambda x: (x > 0).mean()),
         )
     )
-
-
-# ── Sensitivity ─────────────────────────────────────────────────────────
 
 def run_sensitivity(
     contracts: pd.DataFrame,
@@ -344,16 +265,12 @@ def run_sensitivity(
 
     return pd.DataFrame(rows)
 
-
-# ── Visualization ───────────────────────────────────────────────────────
-
 def _dollar_fmt(x, _):
     if abs(x) >= 1e6:
         return f"${x / 1e6:.1f}M"
     if abs(x) >= 1e3:
         return f"${x / 1e3:.0f}K"
     return f"${x:.0f}"
-
 
 def plot_all(
     trades_a: pd.DataFrame,
@@ -365,7 +282,6 @@ def plot_all(
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     sfx = f"_{label_suffix}" if label_suffix else ""
 
-    # 1. Cumulative P&L: Strategy A vs B
     fig, ax = plt.subplots(figsize=(12, 5))
     for trades, label, color in [
         (trades_a, "A: Hold to Expiry", "blue"),
@@ -384,7 +300,6 @@ def plot_all(
     fig.savefig(os.path.join(OUTPUT_DIR, f"cumulative_pnl_ab{sfx}.png"), dpi=150)
     plt.close(fig)
 
-    # 2. NN vs NWP (Strategy A)
     fig, ax = plt.subplots(figsize=(12, 5))
     if not trades_a.empty:
         daily_nn = trades_a.groupby("date")["pnl_dollars"].sum().sort_index()
@@ -403,7 +318,6 @@ def plot_all(
     fig.savefig(os.path.join(OUTPUT_DIR, f"cumulative_pnl_nn_vs_nwp{sfx}.png"), dpi=150)
     plt.close(fig)
 
-    # 3. P&L by month
     fig, ax = plt.subplots(figsize=(10, 5))
     monthly = metrics_by_month(trades_a)
     if not monthly.empty:
@@ -418,7 +332,6 @@ def plot_all(
     fig.savefig(os.path.join(OUTPUT_DIR, f"pnl_by_month{sfx}.png"), dpi=150)
     plt.close(fig)
 
-    # 4. Sensitivity
     if not sensitivity_df.empty:
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
         for strat in ["A_hold", "B_convergence"]:
@@ -430,9 +343,6 @@ def plot_all(
         fig.tight_layout()
         fig.savefig(os.path.join(OUTPUT_DIR, f"sensitivity{sfx}.png"), dpi=150)
         plt.close(fig)
-
-
-# ── Print summary ───────────────────────────────────────────────────────
 
 def print_run_summary(
     title: str,
@@ -487,16 +397,12 @@ def print_run_summary(
 
     print("=" * 70)
 
-
-# ── Run a single analysis scope ─────────────────────────────────────────
-
 def run_scope(
     title: str,
     kalshi: pd.DataFrame,
     preds: pd.DataFrame,
     label_suffix: str = "",
 ):
-    """Run full backtest for a given scope (city/date subset)."""
     print(f"\n{'─' * 70}")
     print(f"  Scope: {title}")
     print(f"{'─' * 70}")
@@ -516,7 +422,6 @@ def run_scope(
     print("  Sensitivity analysis...")
     sens_df = run_sensitivity(contracts)
 
-    # NWP baselines
     print("  NWP baselines...")
     nwp_results = {}
     for name, col in [("GFS", "fcst_gfs_global"), ("HRRR", "fcst_ncep_hrrr_conus"), ("ECMWF", "fcst_ecmwf_ifs025")]:
@@ -536,7 +441,6 @@ def run_scope(
     print(f"  Saving plots ({label_suffix})...")
     plot_all(trades_a, trades_b, sens_df, nwp_results, label_suffix)
 
-    # Save CSVs
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     sfx = f"_{label_suffix}" if label_suffix else ""
     trades_a.to_csv(os.path.join(OUTPUT_DIR, f"trades_a{sfx}.csv"), index=False)
@@ -544,9 +448,6 @@ def run_scope(
     sens_df.to_csv(os.path.join(OUTPUT_DIR, f"sensitivity{sfx}.csv"), index=False)
 
     return contracts, trades_a, trades_b, sens_df, nwp_results
-
-
-# ── Main ────────────────────────────────────────────────────────────────
 
 def main():
     print("Loading data...")
@@ -556,7 +457,6 @@ def main():
     print(f"Kalshi contracts loaded: {len(kalshi):,}")
     print(f"Cities: {sorted(kalshi['series_ticker'].unique())}")
 
-    # Scope 1: Austin full year
     kalshi_aus = kalshi[kalshi["series_ticker"] == "KXHIGHAUS"]
     preds_aus = preds[preds["ticker"] == "KXHIGHAUS"]
     run_scope(
@@ -564,9 +464,8 @@ def main():
         kalshi_aus, preds_aus, label_suffix="austin",
     )
 
-    # Scope 2: All 4 ERCOT cities, overlapping period only
     ercot_tickers = ["KXHIGHAUS", "KXHIGHTDAL", "KXHIGHTHOU", "KXHIGHTSATX"]
-    # Find overlapping dates (all 4 cities have data)
+
     date_counts = kalshi[kalshi["series_ticker"].isin(ercot_tickers)].groupby("date")["series_ticker"].nunique()
     overlap_dates = date_counts[date_counts == 4].index
 
@@ -587,7 +486,6 @@ def main():
         print("\nNo overlapping dates found for all 4 ERCOT cities.")
 
     print("\nDone.")
-
 
 if __name__ == "__main__":
     main()

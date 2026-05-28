@@ -1,6 +1,3 @@
-"""
-Training infrastructure: model architecture, training loop, inference.
-"""
 import os
 import logging
 
@@ -9,42 +6,26 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
-import pandas as pd
 
 import config as cfg
 
 log = logging.getLogger(__name__)
 
-
-# ── Loss function ────────────────────────────────────────────────────
-
 def gaussian_nll_loss(mu: torch.Tensor, sigma: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    """Negative log-likelihood of heteroscedastic Gaussian.
-    mu, sigma, y: all (batch,) tensors.
-    """
     var = sigma ** 2 + 1e-6
     return 0.5 * (torch.log(var) + (y - mu) ** 2 / var).mean()
 
-
-# ── Dataset helpers ──────────────────────────────────────────────────
-
 def make_dataset(features: np.ndarray, city_idx: np.ndarray, targets: np.ndarray) -> TensorDataset:
-    """Create a TensorDataset from numpy arrays."""
     return TensorDataset(
         torch.tensor(features, dtype=torch.float32),
         torch.tensor(city_idx, dtype=torch.long),
         torch.tensor(targets, dtype=torch.float32),
     )
 
-
 def make_loader(dataset: TensorDataset, batch_size: int, shuffle: bool = True) -> DataLoader:
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=False)
 
-
-# ── Generic MLP builder ─────────────────────────────────────────────
-
 class TemperatureMLP(nn.Module):
-    """MLP with city embedding, heteroscedastic output (mu, sigma)."""
 
     def __init__(self, n_continuous: int, n_cities: int = cfg.N_CITIES,
                  city_embed_dim: int = 8, hidden_dims: list[int] = None,
@@ -71,7 +52,7 @@ class TemperatureMLP(nn.Module):
                 layers.append(nn.Dropout(dropout[i]))
             prev_dim = h_dim
 
-        layers.append(nn.Linear(prev_dim, 2))  # [mu, log_sigma]
+        layers.append(nn.Linear(prev_dim, 2))
         self.net = nn.Sequential(*layers)
 
     def forward(self, x_continuous: torch.Tensor, city_idx: torch.Tensor):
@@ -79,11 +60,8 @@ class TemperatureMLP(nn.Module):
         x = torch.cat([x_continuous, emb], dim=1)
         out = self.net(x)
         mu = out[:, 0]
-        sigma = F.softplus(out[:, 1]) + 1e-3  # ensure positive
+        sigma = F.softplus(out[:, 1]) + 1e-3
         return mu, sigma
-
-
-# ── Training loop ────────────────────────────────────────────────────
 
 def train_model(
     model: nn.Module,
@@ -93,10 +71,6 @@ def train_model(
     checkpoint_path: str,
     device: str = None,
 ) -> dict:
-    """
-    Train with AdamW, cosine annealing, early stopping, gradient clipping.
-    Returns training history dict.
-    """
     if device is None:
         device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
     log.info("Training on device: %s", device)
@@ -111,7 +85,7 @@ def train_model(
     history = {"train_loss": [], "val_loss": [], "lr": []}
 
     for epoch in range(hp["epochs"]):
-        # Train
+
         model.train()
         train_losses = []
         for x, city_idx, y in train_loader:
@@ -124,7 +98,6 @@ def train_model(
             optimizer.step()
             train_losses.append(loss.item())
 
-        # Validate
         model.eval()
         val_losses = []
         with torch.no_grad():
@@ -147,7 +120,6 @@ def train_model(
             log.info("Epoch %d/%d  train=%.4f  val=%.4f  lr=%.2e",
                      epoch + 1, hp["epochs"], train_loss, val_loss, lr)
 
-        # Early stopping + checkpointing
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             patience_counter = 0
@@ -159,17 +131,12 @@ def train_model(
                 log.info("Early stopping at epoch %d (best val=%.4f)", epoch + 1, best_val_loss)
                 break
 
-    # Load best
     model.load_state_dict(torch.load(checkpoint_path, weights_only=True))
     log.info("Training complete. Best val loss: %.4f", best_val_loss)
     return history
 
-
-# ── Inference ────────────────────────────────────────────────────────
-
 @torch.no_grad()
 def predict(model: nn.Module, loader: DataLoader, device: str = None) -> tuple[np.ndarray, np.ndarray]:
-    """Run inference, return (mu_array, sigma_array)."""
     if device is None:
         device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
     model = model.to(device)
