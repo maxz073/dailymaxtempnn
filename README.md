@@ -55,7 +55,7 @@ The model outputs a heteroscedastic Gaussian (mu, sigma), providing both a point
 | Solar / astronomical | day length, solar declination, days since winter solstice | 3 |
 | Cross interactions | mean×std, spread×cloud, elevation×pressure, coastal×wind, continentality×season | 5 |
 
-**## Performance
+## Performance
 
 ### Out-of-Sample (Test: Apr 2025–Apr 2026, full year)
 
@@ -125,7 +125,7 @@ jupyter notebook performance.ipynb
 
 In-sample and out-of-sample evaluation: overall metrics, per-city breakdown, calibration plots, residual diagnostics, time series visualization, MAE heatmaps.
 
-### Refresh data (optional)
+### Refresh data
 
 ```bash
 python data_fetch.py
@@ -137,7 +137,6 @@ Re-fetches all data from APIs (NWS/ACIS, Open-Meteo, NOAA CPC). Existing files a
 
 ```bash
 python energy_value.py      # ERCOT energy procurement savings
-python kalshi_backtest.py   # Kalshi temperature market backtest
 ```
 
 See [ECONOMIC_ANALYSIS.md](ECONOMIC_ANALYSIS.md) for full methodology, assumptions, and parameter documentation.
